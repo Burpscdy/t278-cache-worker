@@ -1,0 +1,28 @@
+name: T278 Hour20 Egress Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/t278-hour20-egress-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe AUD USD 2021-12-29 hour 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$RUNNER_TEMP/hour20.json"
+          code="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 45 --output "$tmp" --write-out '%{http_code}' 'https://jetta.dukascopy.com/v1/ticks/AUD-USD/2021/12/29/20')"
+          bytes="$(wc -c < "$tmp" | tr -d ' ')"
+          echo "$code $bytes"
+          test "$code" = "200"
+          test "$bytes" -gt 100
+          python3 -c 'import json,sys; p=json.load(open(sys.argv[1],"rb")); m=sorted({"timestamp","multiplier"}-p.keys()); (_ for _ in ()).throw(SystemExit(f"missing required Jetta fields: {m}")) if m else None' "$tmp"
