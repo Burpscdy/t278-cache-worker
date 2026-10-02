@@ -33,7 +33,7 @@ jobs:
             test "$bytes" -gt 100
             python3 -c 'import json,sys; p=json.load(open(sys.argv[1],"rb")); m=sorted({"timestamp","multiplier"}-p.keys()); (_ for _ in ()).throw(SystemExit(f"missing required Jetta fields: {m}")) if m else None' "$tmp"
             mv "$tmp" "$out"
-            sleep 2
+            sleep 4
           }
 
           fetch_json "https://jetta.dukascopy.com/v1/candles/minute/AUD-USD/BID/2021/12/29" "$ROOT/minute/2021-12-29-BID.json"
