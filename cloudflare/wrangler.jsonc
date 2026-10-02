@@ -1,0 +1,7 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "t278-dukascopy-cache-worker",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-10-02",
+  "workers_dev": true
+}
