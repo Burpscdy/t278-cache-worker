@@ -26,9 +26,22 @@ jobs:
             url="$1"
             out="$2"
             tmp="${out}.tmp"
-            code="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 45 --output "$tmp" --write-out '%{http_code}' "$url")"
+            headers="${tmp}.headers"
+            code="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 45 --dump-header "$headers" --output "$tmp" --write-out '%{http_code}' "$url")"
             bytes="$(wc -c < "$tmp" | tr -d ' ')"
             echo "$code $bytes $url"
+            if [ "$code" = "429" ]; then
+              retry_after="$(awk 'BEGIN{IGNORECASE=1} /^retry-after:/ {gsub("\\r","",$2); print $2}' "$headers" | tail -1)"
+              case "$retry_after" in
+                ''|*[!0-9]*) retry_after=60 ;;
+              esac
+              if [ "$retry_after" -gt 120 ]; then retry_after=120; fi
+              echo "HTTP 429; respecting Retry-After/cooldown: ${retry_after}s"
+              sleep "$retry_after"
+              code="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 45 --dump-header "$headers" --output "$tmp" --write-out '%{http_code}' "$url")"
+              bytes="$(wc -c < "$tmp" | tr -d ' ')"
+              echo "retry $code $bytes $url"
+            fi
             test "$code" = "200"
             test "$bytes" -gt 100
             python3 -c 'import json,sys; p=json.load(open(sys.argv[1],"rb")); m=sorted({"timestamp","multiplier"}-p.keys()); (_ for _ in ()).throw(SystemExit(f"missing required Jetta fields: {m}")) if m else None' "$tmp"
