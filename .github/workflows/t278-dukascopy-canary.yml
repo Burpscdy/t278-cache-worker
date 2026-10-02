@@ -11,64 +11,123 @@ permissions:
   contents: read
 
 jobs:
-  seed-one-blocked-day:
+  chunk-one:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Fetch AUD USD 2021-12-29 cache shard
+      - name: Fetch AUD USD 2021-12-29 chunk one
         shell: bash
         run: |
           set -euo pipefail
-          ROOT="$RUNNER_TEMP/t278-cycle6-seed/aud_usd"
+          ROOT="$RUNNER_TEMP/chunk-one/aud_usd"
           mkdir -p "$ROOT/minute" "$ROOT/ticks"
 
           fetch_json() {
             url="$1"
             out="$2"
             tmp="${out}.tmp"
-            headers="${tmp}.headers"
-            code="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 45 --dump-header "$headers" --output "$tmp" --write-out '%{http_code}' "$url")"
+            code="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 45 --output "$tmp" --write-out '%{http_code}' "$url")"
             bytes="$(wc -c < "$tmp" | tr -d ' ')"
             echo "$code $bytes $url"
-            if [ "$code" = "429" ]; then
-              retry_after="$(awk 'BEGIN{IGNORECASE=1} /^retry-after:/ {gsub("\\r","",$2); print $2}' "$headers" | tail -1)"
-              case "$retry_after" in
-                ''|*[!0-9]*) retry_after=60 ;;
-              esac
-              if [ "$retry_after" -gt 120 ]; then retry_after=120; fi
-              echo "HTTP 429; respecting Retry-After/cooldown: ${retry_after}s"
-              sleep "$retry_after"
-              code="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 45 --dump-header "$headers" --output "$tmp" --write-out '%{http_code}' "$url")"
-              bytes="$(wc -c < "$tmp" | tr -d ' ')"
-              echo "retry $code $bytes $url"
-            fi
             test "$code" = "200"
             test "$bytes" -gt 100
             python3 -c 'import json,sys; p=json.load(open(sys.argv[1],"rb")); m=sorted({"timestamp","multiplier"}-p.keys()); (_ for _ in ()).throw(SystemExit(f"missing required Jetta fields: {m}")) if m else None' "$tmp"
             mv "$tmp" "$out"
-            sleep 4
+            sleep 2
           }
 
           fetch_json "https://jetta.dukascopy.com/v1/candles/minute/AUD-USD/BID/2021/12/29" "$ROOT/minute/2021-12-29-BID.json"
           fetch_json "https://jetta.dukascopy.com/v1/candles/minute/AUD-USD/ASK/2021/12/29" "$ROOT/minute/2021-12-29-ASK.json"
-
-          for hour in $(seq 13 22); do
+          for hour in 13 14 15 16; do
             fetch_json "https://jetta.dukascopy.com/v1/ticks/AUD-USD/2021/12/29/$hour" "$ROOT/ticks/2021-12-29-$hour.json"
           done
 
+      - name: Upload chunk one
+        uses: actions/upload-artifact@v4
+        with:
+          name: t278-canary-chunk-one
+          path: ${{ runner.temp }}/chunk-one
+          if-no-files-found: error
+          retention-days: 3
+
+  chunk-two:
+    needs: chunk-one
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch AUD USD 2021-12-29 chunk two
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/chunk-two/aud_usd"
+          mkdir -p "$ROOT/ticks"
+
+          fetch_json() {
+            url="$1"
+            out="$2"
+            tmp="${out}.tmp"
+            code="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 45 --output "$tmp" --write-out '%{http_code}' "$url")"
+            bytes="$(wc -c < "$tmp" | tr -d ' ')"
+            echo "$code $bytes $url"
+            test "$code" = "200"
+            test "$bytes" -gt 100
+            python3 -c 'import json,sys; p=json.load(open(sys.argv[1],"rb")); m=sorted({"timestamp","multiplier"}-p.keys()); (_ for _ in ()).throw(SystemExit(f"missing required Jetta fields: {m}")) if m else None' "$tmp"
+            mv "$tmp" "$out"
+            sleep 2
+          }
+
+          for hour in 17 18 19 20 21 22; do
+            fetch_json "https://jetta.dukascopy.com/v1/ticks/AUD-USD/2021/12/29/$hour" "$ROOT/ticks/2021-12-29-$hour.json"
+          done
+
+      - name: Upload chunk two
+        uses: actions/upload-artifact@v4
+        with:
+          name: t278-canary-chunk-two
+          path: ${{ runner.temp }}/chunk-two
+          if-no-files-found: error
+          retention-days: 3
+
+  merge-and-verify:
+    needs: [chunk-one, chunk-two]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download chunk one
+        uses: actions/download-artifact@v4
+        with:
+          name: t278-canary-chunk-one
+          path: ${{ runner.temp }}/merged
+
+      - name: Download chunk two
+        uses: actions/download-artifact@v4
+        with:
+          name: t278-canary-chunk-two
+          path: ${{ runner.temp }}/merged
+
+      - name: Verify merged shard
+        shell: bash
+        run: |
+          set -euo pipefail
           python3 - <<'PY'
           import hashlib, json, os
           from pathlib import Path
 
-          root = Path(os.environ["RUNNER_TEMP"]) / "t278-cycle6-seed"
-          files = sorted(p for p in root.rglob("*.json"))
+          root = Path(os.environ["RUNNER_TEMP"]) / "merged"
+          files = sorted(
+              p for p in root.rglob("*.json")
+              if p.name != "manifest.json"
+          )
           if len(files) != 12:
-              raise SystemExit(f"expected 12 JSON payloads, found {len(files)}")
+              raise SystemExit(f"expected 12 Jetta payloads, found {len(files)}")
 
           manifest = []
           for path in files:
               raw = path.read_bytes()
-              json.loads(raw)
+              payload = json.loads(raw)
+              missing = sorted({"timestamp", "multiplier"} - payload.keys())
+              if missing:
+                  raise SystemExit(f"{path}: missing {missing}")
               manifest.append({
                   "path": str(path.relative_to(root)),
                   "bytes": len(raw),
@@ -79,8 +138,8 @@ jobs:
               "status": "PASS",
               "instrument": "AUD_USD",
               "day": "2021-12-29",
-              "payload_count": len(files),
-              "total_bytes": sum(item["bytes"] for item in manifest),
+              "payload_count": 12,
+              "total_bytes": sum(x["bytes"] for x in manifest),
               "payloads": manifest,
               "broker_action": "NONE",
               "live_capital": False,
@@ -89,11 +148,10 @@ jobs:
           print(json.dumps(receipt, indent=2))
           PY
 
-      - name: Upload cache shard
+      - name: Upload merged cache shard
         uses: actions/upload-artifact@v4
         with:
           name: t278-audusd-2021-12-29-cache-shard
-          path: ${{ runner.temp }}/t278-cycle6-seed
+          path: ${{ runner.temp }}/merged
           if-no-files-found: error
           retention-days: 3
-          compression-level: 6
