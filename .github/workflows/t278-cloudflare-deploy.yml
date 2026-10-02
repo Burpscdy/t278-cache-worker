@@ -25,23 +25,28 @@ jobs:
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           test -n "$T278_CANARY_TOKEN"
 
-      - name: Deploy isolated Worker
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: cloudflare
-          command: deploy
-
-      - name: Set dedicated canary secret
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: cloudflare
-          command: secret put T278_CANARY_TOKEN
+      - name: Build one-use Worker secrets file
+        shell: bash
         env:
           T278_CANARY_TOKEN: ${{ secrets.T278_CANARY_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          with open("cloudflare/.t278-secrets.json", "w", encoding="utf-8") as f:
+              json.dump({"T278_CANARY_TOKEN": os.environ["T278_CANARY_TOKEN"]}, f)
+          PY
+          chmod 600 cloudflare/.t278-secrets.json
 
-      - name: Note
-        run: echo "Deployment workflow completed. Canary execution is a separate verified gate."
+      - name: Deploy isolated Worker and dedicated secret
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare
+          command: deploy --secrets-file .t278-secrets.json
+
+      - name: Remove temporary secrets file
+        if: always()
+        shell: bash
+        run: rm -f cloudflare/.t278-secrets.json
